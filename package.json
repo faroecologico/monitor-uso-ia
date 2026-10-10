@@ -1,0 +1,13 @@
+{
+  "name": "monitor-uso-ia",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "Ventanita flotante con el uso restante de Codex y Claude",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^44.7.0"
+  }
+}

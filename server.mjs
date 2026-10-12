@@ -3,7 +3,7 @@
 // Sólo lee archivos de este computador; la única salida a internet es la
 // consulta de uso a Anthropic, y sólo si existe un inicio de sesión del CLI.
 import { createServer } from 'node:http';
-import { readFile, readdir, stat, open } from 'node:fs/promises';
+import { readFile, writeFile, readdir, stat, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -158,18 +158,97 @@ async function claudeExacto() {
 }
 
 
+// ---------- Antigravity: su proceso local (language_server) entrega la cuota por modelo
+// Sólo responde mientras Antigravity está abierto; se guarda la última lectura.
+let agy = { t: 0, valor: null };
+// La última lectura se guarda en disco: con Antigravity cerrado no se gasta cuota,
+// así que sigue siendo cierta hasta la hora de reinicio, y después vuelve a 100 %.
+const GUARDADO_AGY = join(AQUI, 'ultima-antigravity.json');
+const guardadoAgy = readFile(GUARDADO_AGY, 'utf8').then((t) => { agy.valor = JSON.parse(t); }).catch(() => {});
+function ultimaAgy(nota) {
+  if (!agy.valor) return { ok: false, nota };
+  const ahora = Date.now();
+  const ventanas = agy.valor.ventanas
+    .map((v) => (v.reinicia && v.reinicia <= ahora ? { ...v, usado: 0, reinicia: null, vencida: true } : v))
+    .sort((a, b) => b.usado - a.usado);
+  return { ...agy.valor, ventanas, cerrado: true };
+}
+const powershell = (orden) => new Promise((listo) => {
+  execFile('powershell', ['-NoProfile', '-Command', orden], { windowsHide: true, timeout: 15_000 },
+    (_e, salida) => listo(String(salida || '').trim()));
+});
+const PROCESO_AGY = `Get-CimInstance Win32_Process -Filter "Name='language_server.exe'" | Where-Object { $_.CommandLine -match 'antigravity' } | Select-Object -First 1`;
+
+// El ícono se saca del Antigravity instalado, así no se distribuye con el proyecto
+let iconoAgy = null;
+async function extraerIconoAgy() {
+  const base64 = await powershell(`Add-Type -AssemblyName System.Drawing; $m = New-Object IO.MemoryStream; `
+    + `[Drawing.Icon]::ExtractAssociatedIcon("$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe").ToBitmap().Save($m, [Drawing.Imaging.ImageFormat]::Png); `
+    + `[Convert]::ToBase64String($m.ToArray())`);
+  return Buffer.from(base64, 'base64');
+}
+
+async function leerAntigravity() {
+  if (process.platform !== 'win32') return { ok: false, nota: 'Antigravity sólo está soportado en Windows' };
+  await guardadoAgy;
+  if (Date.now() - agy.t < 120_000 && agy.valor) return agy.valor;
+  const sinLectura = ultimaAgy;
+  const [linea, pid] = (await powershell(`$p = ${PROCESO_AGY}; if ($p) { $p.CommandLine; $p.ProcessId }`)).split(/\r?\n/);
+  const token = /--csrf_token[= ](\S+)/.exec(linea || '')?.[1];
+  if (!token || !Number(pid)) return sinLectura('abre Antigravity para leer su cuota');
+  const puertos = (await powershell(`(Get-NetTCPConnection -OwningProcess ${Number(pid)} -State Listen).LocalPort -join ','`))
+    .split(',').filter(Boolean);
+  for (const puerto of puertos) {
+    try {
+      // la misma llamada que usa "View Usage" dentro de Antigravity
+      const r = await fetch(`http://127.0.0.1:${puerto}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'connect-protocol-version': '1', 'x-codeium-csrf-token': token },
+        body: JSON.stringify({ metadata: { ideName: 'antigravity', extensionName: 'antigravity', locale: 'en' } }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!r.ok) continue;
+      // cada grupo de modelos (Gemini / Claude y GPT) trae un límite semanal y uno de 5 horas
+      const ventanas = [];
+      for (const g of (await r.json()).response?.groups || []) {
+        const semana = g.buckets?.find((x) => x.window === 'weekly');
+        if (!semana || typeof semana.remainingFraction !== 'number') continue;
+        ventanas.push({
+          etiqueta: 'Semana', modelos: [g.displayName],
+          usado: 100 * (1 - semana.remainingFraction),
+          reinicia: semana.resetTime ? Date.parse(semana.resetTime) : null,
+        });
+      }
+      // primero el grupo al que le queda menos
+      ventanas.sort((x, y) => y.usado - x.usado);
+      if (!ventanas.length) continue;
+      const valor = { ok: true, leido: Date.now(), ventanas };
+      agy = { t: Date.now(), valor };
+      writeFile(GUARDADO_AGY, JSON.stringify(valor)).catch(() => {});
+      return valor;
+    } catch { /* ese puerto no es el de la API */ }
+  }
+  return sinLectura('Antigravity no respondió');
+}
+
 async function estado() {
-  const [codex, claude] = await Promise.all([
+  const [codex, claude, antigravity] = await Promise.all([
     leerCodex().catch((e) => ({ ok: false, nota: String(e.message || e) })),
     claudeExacto().catch((e) => ({ ok: false, motivo: String(e.message || e) })),
+    leerAntigravity().catch((e) => ({ ok: false, nota: String(e.message || e) })),
   ]);
-  return { generado: Date.now(), codex, claude };
+  return { generado: Date.now(), codex, claude, antigravity };
 }
 
 createServer(async (req, res) => {
   if (req.url === '/api/uso') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(JSON.stringify(await estado()));
+  } else if (req.url === '/antigravity.png') {
+    const png = await (iconoAgy ??= extraerIconoAgy());
+    if (!png.length) return res.writeHead(404).end();
+    res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'max-age=86400' });
+    res.end(png);
   } else if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(await readFile(join(AQUI, 'index.html')));

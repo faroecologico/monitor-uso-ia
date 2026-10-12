@@ -4,7 +4,7 @@ const { readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const ANCHO = 140;
+const ANCHO = 74;
 const PUERTO = 4517;
 let tray; // referencia global: si se recolecta, el ícono desaparece
 
@@ -47,7 +47,7 @@ app.whenReady().then(async () => {
   // Ícono junto al reloj: clic muestra u oculta; clic derecho trae el menú para cerrar
   const alternar = () => (win.isVisible() ? win.hide() : win.show());
   tray = new Tray(nativeImage.createFromPath(join(__dirname, 'icono.png')).resize({ width: 32, height: 32 }));
-  tray.setToolTip('Uso restante de Codex y Claude');
+  tray.setToolTip('Uso restante de Codex, Claude y Antigravity');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Mostrar u ocultar', click: alternar },
     { type: 'separator' },

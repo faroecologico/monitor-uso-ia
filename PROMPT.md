@@ -4,15 +4,16 @@ Pégalo tal cual en Claude Code o en Codex.
 
 ```text
 Constrúyeme un widget de escritorio que muestre cuánto me QUEDA de uso semanal
-en Codex y en Claude. Hazlo en una carpeta nueva fuera de cualquier repositorio.
+en Codex, en Claude y en Antigravity. Hazlo en una carpeta nueva fuera de cualquier repositorio.
 
 QUÉ QUIERO VER
-- Una ventanita flotante de unos 140 × 100 px, sin marco, siempre encima de las
+- Una ventanita flotante de unos 74 × 290 px, sin marco, siempre encima de las
   demás ventanas, arrastrable desde cualquier punto, que recuerde su posición.
 - Fondo casi transparente (velo oscuro al 30 %, esquinas redondeadas, borde
   claro de 1 px) y sombra en el texto para que se lea sobre cualquier fondo.
-- Dos aros de progreso lado a lado: Codex (logo de OpenAI en blanco al centro)
-  y Claude (logo de Claude en naranja #D97757 al centro). Los logos, de Simple Icons.
+- Tres aros de progreso apilados en vertical: Codex (logo de OpenAI en blanco al
+  centro), Claude (logo de Claude en naranja #D97757) y Antigravity (el ícono
+  extraído del Antigravity.exe instalado). Los dos primeros, de Simple Icons.
 - El aro lleno significa 100 % restante y se vacía a medida que gasto.
   Verde sobre 40 %, amarillo entre 15 y 40 %, rojo bajo 15 %.
 - Bajo cada aro: el % restante y cuánto falta para el reinicio ("5 d 9 h").
@@ -43,6 +44,18 @@ DE DÓNDE SALEN LOS DATOS
   "limits"; el semanal es el de kind "weekly_all", con percent y resets_at.
   Es un endpoint no documentado: puede cambiar. Guarda la respuesta 3 minutos
   en memoria para no consultarlo de más.
+
+- Antigravity: sin red. Busca el proceso language_server.exe cuya línea de
+  comandos contiene "antigravity", saca de ahí --csrf_token y averigua sus
+  puertos en escucha. Haz POST por http a
+  127.0.0.1:<puerto>/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary
+  con las cabeceras x-codeium-csrf-token y connect-protocol-version: 1 y el
+  cuerpo {"metadata":{"ideName":"antigravity","extensionName":"antigravity"}}.
+  response.groups[].buckets trae por grupo de modelos un bucket "weekly" y uno
+  "5h" con remainingFraction y resetTime. Muestra el semanal del grupo al que
+  le queda menos. OJO: GetUserStatus sólo trae el de 5 horas. Sólo responde con
+  Antigravity abierto: guarda la última lectura en disco y úsala mientras esté
+  cerrado (pasado el resetTime, 100 %).
 
 TROPIEZOS QUE YA CONOCEMOS
 - Si sólo uso la app de escritorio de Claude, ese archivo no tiene
